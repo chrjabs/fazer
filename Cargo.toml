@@ -1,0 +1,34 @@
+[package]
+name = "fazer"
+authors = ["Christoph Jabs <christoph.jabs@helsinki.fi>"]
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+description = "A fuzzer for (multi-objective) MaxSAT solvers."
+keywords = ["fuzzer", "multi-objective", "maxsat"]
+repository = "https://github.com/chrjabs/fazer"
+readme = "README.md"
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[dependencies]
+rustsat = { version = "0.3", path = "../rustsat/rustsat", features = ["multiopt", "internals"] }
+clap = { version = "4.4", features = ["derive", "cargo"] }
+concolor-clap = { version = "0.1.0" }
+termcolor = { version = "1.2.0" }
+atty = { version = "0.2.14" }
+signal-hook = { version = "0.3.15" }
+scuttle = { optional = true, version = "0.3", path = "../scuttle" }
+toml = { version = "0.8" }
+serde = { version = "1.0", features = ["derive"] }
+rand = { version = "0.8" }
+rand_chacha = { version = "0.3" }
+
+[features]
+default = ["scuttle"]
+scuttle = ["dep:scuttle"]
+
+[profile.release]
+lto = true
+debug-assertions = true
+overflow-checks = true
