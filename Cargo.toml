@@ -1,12 +1,12 @@
 [package]
-name = "fazer"
+name = "fazzer"
 authors = ["Christoph Jabs <christoph.jabs@helsinki.fi>"]
 version = "0.1.0"
 edition = "2021"
 license = "MIT"
 description = "A fuzzer for (multi-objective) MaxSAT solvers."
 keywords = ["fuzzer", "multi-objective", "maxsat"]
-repository = "https://github.com/chrjabs/fazer"
+repository = "https://github.com/chrjabs/fazzer"
 readme = "README.md"
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html

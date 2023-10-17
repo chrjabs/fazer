@@ -1,4 +1,4 @@
-//! # Fazer - Multi-Objective MaxSAT Fuzzing
+//! # Fazzer - Multi-Objective MaxSAT Fuzzing
 
 use std::io;
 

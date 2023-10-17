@@ -1,0 +1,17 @@
+[instances]
+objectives = { min = 0, max = 2 }
+layers = { min = 1, max = 3 }
+layer_width = { min = 5, max = { min = 5, max = 10 } }
+layer_clauses = { min = 100, max = 250, div = 100 }
+equalities = { zero_prob = 0.66, min = 0, max = 31 }
+ands = { zero_prob = 0.5, min = 0, max = 31 }
+xors3 = { zero_prob = 0.75, min = 0, max = 16 }
+xors4 = { zero_prob = 0.8, min = 0, max = 12 }
+max_weight = [
+  { min = 1, max = 1 },
+  { min = 2, max = 32 },
+  { min = 33, max = 256 },
+  { min = 257, max = 65536 },
+  { min = 65537, max = 8589934591 },
+  { min = 9590034592, max = 9223372036854775807 },
+]

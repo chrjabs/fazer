@@ -121,16 +121,16 @@ impl Cli {
             )
             .unwrap_or_else(panic_with_err!(cli));
             if let Some(val) = inst.min_objs {
-                config.instances.min_objs = val;
+                config.instances.set_min_objs(val);
             }
             if let Some(val) = inst.max_objs {
-                config.instances.max_objs = val;
+                config.instances.set_max_objs(val);
             }
             if let Some(val) = inst.min_layers {
-                config.instances.min_layers = val;
+                config.instances.set_min_layers(val);
             }
             if let Some(val) = inst.max_layers {
-                config.instances.max_layers = val;
+                config.instances.set_max_layers(val);
             }
             config
         };

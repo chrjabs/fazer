@@ -11,7 +11,7 @@ use rustsat::{
     types::{Clause, Lit, Var},
 };
 
-use crate::config::{InstConfig, LayerType};
+use crate::config::InstConfig;
 
 const MAX_CL_LEN: u32 = 20;
 
@@ -67,17 +67,10 @@ impl MoGenerator {
 
     fn init(&mut self, config: InstConfig) {
         // generate layers
-        let max_width = self.rng.gen_range(match config.layer_type {
-            LayerType::Tiny => 5..=10,
-            LayerType::Small => 10..=20,
-            LayerType::Regular => 10..=70,
-        });
+        let max_width = self.rng.gen_range(config.max_layer_width());
         self.layers = vec![Layer::default(); self.rng.gen_range(config.layers())];
         for idx in 0..self.layers.len() {
-            let width = self.rng.gen_range(match config.layer_type {
-                LayerType::Tiny => 5..=max_width,
-                _ => 10..=max_width,
-            });
+            let width = self.rng.gen_range(config.min_layer_width()..=max_width);
             let range = if idx > 0 {
                 let first = self.layers[idx - 1].range.end;
                 first..first + width + 1
@@ -89,7 +82,8 @@ impl MoGenerator {
             } else {
                 width
             };
-            let n_clauses = (self.rng.gen_range(100..=250) * width_plus_last) / 100;
+            let n_clauses = (self.rng.gen_range(config.layer_clauses()) * width_plus_last)
+                / config.layer_clauses_div();
             let soft = if n_clauses > 4 * width_plus_last {
                 self.rng.gen_range(1..=self.objs)
             } else {
@@ -107,32 +101,25 @@ impl MoGenerator {
             };
         }
         // generate counts
-        if self.rng.gen_bool(1. / 3.) {
-            self.eqs = self.rng.gen_range(0..=31);
+        if self.rng.gen_bool(config.eqs_nonzero_prob()) {
+            self.eqs = self.rng.gen_range(config.eqs_range());
         }
-        if self.rng.gen_bool(1. / 2.) {
-            self.ands = self.rng.gen_range(0..=31);
+        if self.rng.gen_bool(config.ands_nonzero_prob()) {
+            self.ands = self.rng.gen_range(config.ands_range());
         }
-        if self.rng.gen_bool(1. / 4.) {
-            self.xors3 = self.rng.gen_range(0..=16);
+        if self.rng.gen_bool(config.xors3_nonzero_prob()) {
+            self.xors3 = self.rng.gen_range(config.xors3_range());
         }
-        if self.rng.gen_bool(1. / 5.) {
-            self.xors4 = self.rng.gen_range(0..=12);
+        if self.rng.gen_bool(config.xors4_nonzero_prob()) {
+            self.xors4 = self.rng.gen_range(config.xors4_range());
         }
         self.objs = self.rng.gen_range(config.objs());
-        self.weight_range = match self.rng.gen_range(1..=5) {
-            1 => 1..2,
-            2 => 1..self.rng.gen_range(3..=33),
-            3 => 1..self.rng.gen_range(34..=257),
-            4 => 1..self.rng.gen_range(258..=65536),
-            _ => {
-                if self.rng.gen_bool(1. / 5.) {
-                    1..self.rng.gen_range((1 << 32) + 1..(1 << 63))
-                } else {
-                    1..self.rng.gen_range(65537..=(1 << 32) + 1)
-                }
-            }
-        };
+        let variant = self.rng.gen_range(0..config.max_weight_variants());
+        self.weight_range = 1..self
+            .rng
+            .gen_range(config.max_weight(variant))
+            .try_into()
+            .unwrap();
         self.arity = vec![0; self.ands as usize];
         let width_plus_last = if self.layers.len() > 1 {
             self.layers[self.layers.len() - 1].range.end
@@ -549,34 +536,60 @@ mod tests {
 
     use rustsat::instances::fio::dimacs;
 
-    use crate::config::{InstConfig, LayerType};
+    use crate::config::{InstConfig, Config};
 
     use super::MoGenerator;
 
-    fn gen(seed: u64) {
-        let config = InstConfig {
-            seed: Some(seed),
-            min_objs: 0,
-            max_objs: 2,
-            min_layers: 2,
-            max_layers: 5,
-            layer_type: LayerType::Tiny,
-        };
+    fn gen(config: &str, seed: u64) {
+        let mut config: Config =
+            toml::from_str(&std::fs::read_to_string(config).unwrap()).unwrap();
+        let mut config = config.instances;
+        config.seed = Some(seed);
         dimacs::write_mcnf(&mut io::stdout(), MoGenerator::new(config)).unwrap();
     }
 
     #[test]
-    fn gen42() {
-        gen(42)
+    fn gen42tiny() {
+        gen("configs/tiny.toml", 42)
     }
 
     #[test]
-    fn gen100() {
-        gen(100)
+    fn gen100tiny() {
+        gen("configs/tiny.toml", 100)
     }
 
     #[test]
-    fn gen2() {
-        gen(2)
+    fn gen2tiny() {
+        gen("configs/tiny.toml", 2)
+    }
+
+    #[test]
+    fn gen42small() {
+        gen("configs/small.toml", 42)
+    }
+
+    #[test]
+    fn gen100small() {
+        gen("configs/small.toml", 100)
+    }
+
+    #[test]
+    fn gen2small() {
+        gen("configs/small.toml", 2)
+    }
+
+    #[test]
+    fn gen42regular() {
+        gen("configs/regular.toml", 42)
+    }
+
+    #[test]
+    fn gen100regular() {
+        gen("configs/regular.toml", 100)
+    }
+
+    #[test]
+    fn gen2regular() {
+        gen("configs/regular.toml", 2)
     }
 }
