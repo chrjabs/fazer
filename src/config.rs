@@ -1,37 +1,58 @@
 //! # Fuzzer Configuration
 
-use std::{collections::HashMap, ops::RangeInclusive};
+use std::ops::RangeInclusive;
 
+use rustsat::types::RsHashMap;
 use serde::Deserialize;
 
 #[derive(Deserialize)]
 pub struct Config {
     pub execution: Option<ExecConfig>,
-    pub instances: InstConfig,
-    pub solvers: Option<HashMap<String, SolverConfig>>,
+    pub instances: Option<InstConfig>,
+    pub solvers: Option<RsHashMap<String, SolverConfig>>,
+    pub minimization: Option<MinimizeConfig>,
 }
 
-pub struct FullConfig {
+pub struct FuzzConfig {
     pub execution: ExecConfig,
     pub instances: InstConfig,
-    pub solvers: HashMap<String, SolverConfig>,
+    pub solvers: RsHashMap<String, SolverConfig>,
+    pub minimization: Option<MinimizeConfig>,
 }
 
-impl TryFrom<Config> for FullConfig {
+impl TryFrom<Config> for FuzzConfig {
     type Error = &'static str;
 
     fn try_from(value: Config) -> Result<Self, Self::Error> {
         if value.execution.is_none() {
             return Err("missing execution block in config");
         }
+        if value.instances.is_none() {
+            return Err("missing solvers block in config");
+        }
         if value.solvers.is_none() {
             return Err("missing solvers block in config");
         }
-        Ok(FullConfig {
+        if value.instances.is_none() {
+            return Err("missing solvers block in config");
+        }
+        Ok(FuzzConfig {
             execution: value.execution.unwrap(),
-            instances: value.instances,
+            instances: value.instances.unwrap(),
             solvers: value.solvers.unwrap(),
+            minimization: value.minimization,
         })
+    }
+}
+
+impl TryFrom<Config> for RsHashMap<String, SolverConfig> {
+    type Error = &'static str;
+
+    fn try_from(value: Config) -> Result<Self, Self::Error> {
+        if value.solvers.is_none() {
+            return Err("missing solvers block in config");
+        }
+        Ok(value.solvers.unwrap())
     }
 }
 
@@ -117,6 +138,17 @@ impl InstConfig {
     }
 }
 
+impl TryFrom<Config> for InstConfig {
+    type Error = &'static str;
+
+    fn try_from(value: Config) -> Result<Self, Self::Error> {
+        if value.instances.is_none() {
+            return Err("missing instances block");
+        }
+        Ok(value.instances.unwrap())
+    }
+}
+
 /// A range to draw random values from
 #[derive(Deserialize)]
 pub struct U8Range {
@@ -153,6 +185,32 @@ pub struct U8DivRange {
     min: u8,
     max: u8,
     div: u8,
+}
+
+#[derive(Deserialize)]
+pub struct MinimizeConfig {
+    pub max_rounds: u8,
+    pub min_clauses: Option<bool>,
+    pub min_literals: Option<bool>,
+    pub min_variables: Option<bool>,
+    pub soft_to_hard: Option<bool>,
+    pub remove_objectives: Option<bool>,
+    pub weight_to_one: Option<bool>,
+    pub weight_binary_search: Option<bool>,
+    pub shuffle_clauses: Option<bool>,
+    pub shuffle_literals: Option<bool>,
+    pub rename_variable: Option<bool>,
+}
+
+impl TryFrom<Config> for MinimizeConfig {
+    type Error = &'static str;
+
+    fn try_from(value: Config) -> Result<Self, Self::Error> {
+        if value.minimization.is_none() {
+            return Err("missing minimization block");
+        }
+        Ok(value.minimization.unwrap())
+    }
 }
 
 #[derive(Deserialize)]
