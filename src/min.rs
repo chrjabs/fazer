@@ -92,11 +92,11 @@ impl From<MultiOptInstance> for Instance {
     }
 }
 
-fn check_instance<S: Solver + for<'a> From<&'a MultiOptInstance>>(
+fn check_instance<S: Solver + From<MultiOptInstance>>(
     inst: Instance,
 ) -> Result<ParetoFront, Problem> {
     let inst: MultiOptInstance = inst.into();
-    eval::evaluate::<S>(&inst)
+    eval::evaluate::<S>(inst)
 }
 
 pub fn minimize(inst: MultiOptInstance, config: MinimizeConfig) -> MultiOptInstance {

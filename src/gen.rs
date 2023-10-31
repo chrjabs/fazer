@@ -536,13 +536,12 @@ mod tests {
 
     use rustsat::instances::fio::dimacs;
 
-    use crate::config::{InstConfig, Config};
+    use crate::config::{Config, InstConfig};
 
     use super::MoGenerator;
 
     fn gen(config: &str, seed: u64) {
-        let mut config: Config =
-            toml::from_str(&std::fs::read_to_string(config).unwrap()).unwrap();
+        let mut config: Config = toml::from_str(&std::fs::read_to_string(config).unwrap()).unwrap();
         let mut config = config.instances;
         config.seed = Some(seed);
         dimacs::write_mcnf(&mut io::stdout(), MoGenerator::new(config)).unwrap();

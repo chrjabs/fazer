@@ -78,9 +78,12 @@ fn main() -> ExitCode {
         Exec::Generate(config) => dimacs::write_mcnf(&mut io::stdout(), MoGenerator::new(config))
             .unwrap_or_else(panic_with_err!(&cli)),
         Exec::Fuzz(_) => todo!(),
-        Exec::Evaluate(solvers, inst) => {
-            cli.info(&format!("evaluating {:?}", solvers.keys().collect::<Vec<_>>()));
-            let problems = eval::compare(inst, &solvers);
+        Exec::Evaluate(config, inst) => {
+            cli.info(&format!(
+                "evaluating {:?}",
+                config.solvers.keys().collect::<Vec<_>>()
+            ));
+            let problems = eval::compare(inst, &config.solvers, config.pool);
             if !problems.is_empty() {
                 cli.print_problems(&problems);
                 return ExitCode::from(1);

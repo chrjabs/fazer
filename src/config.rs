@@ -2,6 +2,7 @@
 
 use std::ops::RangeInclusive;
 
+use futures::executor::{ThreadPool, ThreadPoolBuilder};
 use rustsat::types::RsHashMap;
 use serde::Deserialize;
 
@@ -45,20 +46,43 @@ impl TryFrom<Config> for FuzzConfig {
     }
 }
 
-impl TryFrom<Config> for RsHashMap<String, SolverConfig> {
+pub struct EvalConfig {
+    pub pool: Option<ThreadPool>,
+    pub solvers: RsHashMap<String, SolverConfig>,
+}
+
+impl TryFrom<Config> for EvalConfig {
     type Error = &'static str;
 
     fn try_from(value: Config) -> Result<Self, Self::Error> {
         if value.solvers.is_none() {
             return Err("missing solvers block in config");
         }
-        Ok(value.solvers.unwrap())
+        if value.execution.is_none() {
+            return Err("missing execution block in config");
+        }
+        Ok(EvalConfig {
+            pool: value.execution.unwrap().into(),
+            solvers: value.solvers.unwrap(),
+        })
     }
 }
 
 #[derive(Deserialize)]
 pub struct ExecConfig {
     pub n_workers: u8,
+}
+
+impl From<ExecConfig> for Option<ThreadPool> {
+    fn from(value: ExecConfig) -> Self {
+        if value.n_workers > 1 {
+            let mut builder = ThreadPoolBuilder::new();
+            builder.pool_size(value.n_workers.into());
+            Some(builder.create().expect("error creating thread pool"))
+        } else {
+            None
+        }
+    }
 }
 
 #[derive(Deserialize)]
@@ -213,12 +237,12 @@ impl TryFrom<Config> for MinimizeConfig {
     }
 }
 
-#[derive(Deserialize)]
+#[derive(Deserialize, Clone)]
 pub enum SolverConfig {
     Scuttle(ScuttleConfig),
 }
 
-#[derive(Deserialize)]
+#[derive(Deserialize, Clone)]
 pub enum ScuttleConfig {
     /// Default p-minimal algorithm
     PMinimal,

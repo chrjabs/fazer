@@ -1,6 +1,11 @@
 //! # Evaluating An Instance With a Solver
 
-use rustsat::{instances::MultiOptInstance, types::RsHashMap};
+use futures::{
+    channel::{mpsc, oneshot},
+    executor::{self, ThreadPool},
+    StreamExt,
+};
+use rustsat::{encodings::pb::DynamicPolyWatchdog, instances::MultiOptInstance, types::RsHashMap};
 use scuttle::types::ParetoFront;
 
 use crate::{
@@ -8,8 +13,8 @@ use crate::{
     Problem, Solver,
 };
 
-pub fn evaluate<S: Solver + for<'a> From<&'a MultiOptInstance>>(
-    inst: &MultiOptInstance,
+pub fn evaluate<S: Solver + From<MultiOptInstance>>(
+    inst: MultiOptInstance,
 ) -> Result<ParetoFront, Problem> {
     std::panic::catch_unwind(|| {
         let mut solver = S::from(inst);
@@ -21,28 +26,97 @@ pub fn evaluate<S: Solver + for<'a> From<&'a MultiOptInstance>>(
 pub fn compare(
     inst: MultiOptInstance,
     solvers: &RsHashMap<String, SolverConfig>,
+    pool: Option<ThreadPool>,
 ) -> Vec<(String, Problem)> {
-    let mut problems = vec![];
-    let mut pfs = vec![];
-    for (sid, sconf) in solvers {
-        let res = match sconf {
-            SolverConfig::Scuttle(conf) => match conf {
-                ScuttleConfig::PMinimal => evaluate::<crate::scuttle::PMin>(&inst),
-                ScuttleConfig::CoreBoostedPMinimal => {
-                    evaluate::<crate::scuttle::PMinCoreBoosting>(&inst)
+    let (mut tx_prob, rx_prob) = mpsc::channel::<(String, Problem)>(solvers.len());
+    let (mut tx_pf, rx_pf) = mpsc::channel::<(String, ParetoFront)>(solvers.len());
+
+    let fut_problems = async {
+        for (sid, sconf) in solvers {
+            let sid = sid.clone();
+            let sconf = sconf.clone();
+            let inst = inst.clone();
+            let mut pf_tx = tx_pf.clone();
+            let mut prob_tx = tx_prob.clone();
+            let fut_tx_result = async move {
+                let res = match sconf {
+                    SolverConfig::Scuttle(conf) => match conf {
+                        ScuttleConfig::PMinimal => evaluate::<crate::scuttle::PMin>(inst),
+                        ScuttleConfig::CoreBoostedPMinimal => {
+                            evaluate::<crate::scuttle::PMinCoreBoosting>(inst)
+                        }
+                        ScuttleConfig::BiOptSatGte => evaluate::<crate::scuttle::BiOptSat>(inst),
+                        ScuttleConfig::BiOptSatDpw => {
+                            evaluate::<crate::scuttle::BiOptSat<DynamicPolyWatchdog>>(inst)
+                        }
+                        ScuttleConfig::LowerBounding => {
+                            evaluate::<crate::scuttle::LowerBounding>(inst)
+                        }
+                    },
+                };
+                match res {
+                    Ok(pf) => pf_tx
+                        .try_send((sid, pf))
+                        .expect("failed to send pareto front"),
+                    Err(prob) => prob_tx
+                        .try_send((sid, prob))
+                        .expect("failed to send problem"),
                 }
-                ScuttleConfig::BiOptSatGte => todo!(),
-                ScuttleConfig::BiOptSatDpw => todo!(),
-                ScuttleConfig::LowerBounding => todo!(),
-            },
-        };
-        match res {
-            Ok(pf) => pfs.push((sid.clone(), pf)),
-            Err(prob) => problems.push((sid.clone(), prob)),
+            };
+            if let Some(ref pool) = pool {
+                pool.spawn_ok(fut_tx_result);
+            } else {
+                fut_tx_result.await;
+            }
         }
+        tx_pf.disconnect();
+
+        let nobjs = inst.n_objectives();
+        let future_pfs = rx_pf
+            .filter(|(sid, pf)| {
+                filter_pf(
+                    sid.clone(),
+                    pf.clone(),
+                    inst.clone(),
+                    pool.clone(),
+                    tx_prob.clone(),
+                )
+            })
+            .collect();
+        let pfs: Vec<_> = future_pfs.await;
+        compare_pfs(pfs, nobjs, pool, tx_prob);
+
+        let fut_problems = rx_prob.collect();
+        fut_problems.await
+    };
+    executor::block_on(fut_problems)
+}
+
+async fn filter_pf(
+    sid: String,
+    pf: ParetoFront,
+    inst: MultiOptInstance,
+    pool: Option<ThreadPool>,
+    mut tx_prob: mpsc::Sender<(String, Problem)>,
+) -> bool {
+    let (tx_filt, rx_filt) = oneshot::channel::<bool>();
+    let future_prob = async move {
+        match check_pf(&pf, &inst) {
+            Ok(_) => tx_filt.send(true).expect("failed to send filter"),
+            Err(prob) => {
+                tx_prob
+                    .try_send((sid.clone(), prob))
+                    .expect("failed to send problem");
+                tx_filt.send(false).expect("failed to send filter");
+            }
+        }
+    };
+    if let Some(pool) = pool {
+        pool.spawn_ok(future_prob);
+    } else {
+        future_prob.await;
     }
-    problems.extend(compare_pfs(pfs, &inst));
-    problems
+    rx_filt.await.expect("error receiving filter")
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -71,51 +145,50 @@ fn check_relation(c1: &[isize], c2: &[isize]) -> Relation {
     dom
 }
 
-fn compare_pfs(
+fn check_pf(pf: &ParetoFront, inst: &MultiOptInstance) -> Result<(), Problem> {
+    // Check solutions
+    for (ndom_idx, ndom) in pf.iter().enumerate() {
+        if ndom.costs().len() != inst.n_objectives() {
+            return Err(Problem::WrongDimension(ndom_idx));
+        }
+        for (sol_idx, sol) in ndom.iter().enumerate() {
+            match inst.cost(sol) {
+                Some(cost) => {
+                    if &cost != ndom.costs() {
+                        return Err(Problem::CostMismatch(ndom_idx, sol_idx));
+                    }
+                }
+                None => {
+                    return Err(Problem::UnsatSol(ndom_idx, sol_idx));
+                }
+            }
+        }
+    }
+    // Check non-dominance
+    for idx1 in 0..pf.len() - 1 {
+        for idx2 in idx1 + 1..pf.len() {
+            match check_relation(pf[idx1].costs(), pf[idx2].costs()) {
+                Relation::Incomparable => continue,
+                Relation::FirstDominates => {
+                    return Err(Problem::SelfDominated(idx2));
+                }
+                Relation::SecondDominates => {
+                    return Err(Problem::SelfDominated(idx1));
+                }
+                Relation::Equal => return Err(Problem::Repeated(idx1, idx2)),
+            }
+        }
+    }
+    Ok(())
+}
+
+/// Assumes that the Pareto fronts have already been individually checked
+async fn compare_pfs(
     mut pfs: Vec<(String, ParetoFront)>,
-    inst: &MultiOptInstance,
-) -> Vec<(String, Problem)> {
-    let mut problems = vec![];
-    pfs.retain(|(sid, pf)| {
-        // Check solutions
-        for (ndom_idx, ndom) in pf.iter().enumerate() {
-            if ndom.costs().len() != inst.n_objectives() {
-                problems.push((sid.clone(), Problem::WrongDimension(ndom_idx)));
-                return false;
-            }
-            for (sol_idx, sol) in ndom.iter().enumerate() {
-                match inst.cost(sol) {
-                    Some(cost) => {
-                        if &cost != ndom.costs() {
-                            problems.push((sid.clone(), Problem::CostMismatch(ndom_idx, sol_idx)));
-                            return false;
-                        }
-                    }
-                    None => {
-                        problems.push((sid.clone(), Problem::UnsatSol(ndom_idx, sol_idx)));
-                        return false;
-                    }
-                }
-            }
-        }
-        // Check non-dominance
-        for idx1 in 0..pf.len() - 1 {
-            for idx2 in idx1 + 1..pf.len() {
-                match check_relation(pf[idx1].costs(), pf[idx2].costs()) {
-                    Relation::Incomparable => continue,
-                    Relation::FirstDominates => {
-                        problems.push((sid.clone(), Problem::SelfDominated(idx2)))
-                    }
-                    Relation::SecondDominates => {
-                        problems.push((sid.clone(), Problem::SelfDominated(idx1)))
-                    }
-                    Relation::Equal => problems.push((sid.clone(), Problem::Repeated(idx1, idx2))),
-                }
-                return false;
-            }
-        }
-        true
-    });
+    nobjs: usize,
+    pool: Option<ThreadPool>,
+    mut tx_prob: mpsc::Sender<(String, Problem)>,
+) {
     // Check lengths
     let max_pf_len = pfs
         .iter()
@@ -124,14 +197,15 @@ fn compare_pfs(
         if pf.len() == max_pf_len {
             return true;
         }
-        problems.push((sid.clone(), Problem::Short));
+        tx_prob
+            .try_send((sid.clone(), Problem::Short))
+            .expect("failed to send problem");
         false
     });
     if pfs.len() <= 1 || pfs[0].1.is_empty() {
-        return problems;
+        return;
     }
     // Build joint non-dominated set and compare
-    let nobjs = inst.n_objectives();
     let mut non_dom_set = vec![0; pfs[0].1.len() * nobjs];
     for (idx, ndom) in pfs[0].1.iter().enumerate() {
         non_dom_set[idx * nobjs..(idx + 1) * nobjs].copy_from_slice(ndom.costs());
@@ -147,7 +221,9 @@ fn compare_pfs(
                         append = false;
                     }
                     Relation::SecondDominates => {
-                        problems.push((sid.clone(), Problem::OtherDominated(ndom_idx)));
+                        tx_prob
+                            .try_send((sid.clone(), Problem::OtherDominated(ndom_idx)))
+                            .expect("failed to send problem");
                         return false;
                     }
                     Relation::Equal => continue 'ndoms,
@@ -163,7 +239,7 @@ fn compare_pfs(
     });
     assert!(!pfs.is_empty());
     if pfs.len() <= 1 {
-        return problems;
+        return;
     }
     // Deduplicate non-dominated set
     let mut idx1 = 0;
@@ -180,19 +256,29 @@ fn compare_pfs(
     }
     // Check remaining Pareto fronts against joint non-dominated set
     'solvers: for (sid, pf) in pfs {
-        for (ndom_idx, ndom) in pf.iter().enumerate() {
-            for idx in (0..non_dom_set.len()).step_by(nobjs) {
-                match check_relation(ndom.costs(), &non_dom_set[idx..idx + nobjs]) {
-                    Relation::Incomparable => (),
-                    Relation::FirstDominates => panic!("should never happen"),
-                    Relation::SecondDominates => {
-                        problems.push((sid.clone(), Problem::OtherDominated(ndom_idx)));
-                        continue 'solvers;
+        let mut prob_tx = tx_prob.clone();
+        let non_dom_set = non_dom_set.clone();
+        let future_prob = async move {
+            for (ndom_idx, ndom) in pf.iter().enumerate() {
+                for idx in (0..non_dom_set.len()).step_by(nobjs) {
+                    match check_relation(ndom.costs(), &non_dom_set[idx..idx + nobjs]) {
+                        Relation::Incomparable => (),
+                        Relation::FirstDominates => panic!("should never happen"),
+                        Relation::SecondDominates => {
+                            prob_tx
+                                .try_send((sid, Problem::OtherDominated(ndom_idx)))
+                                .expect("failed to send problem");
+                            return;
+                        }
+                        Relation::Equal => (),
                     }
-                    Relation::Equal => (),
                 }
             }
+        };
+        if let Some(ref pool) = pool {
+            pool.spawn_ok(future_prob);
+        } else {
+            future_prob.await;
         }
     }
-    problems
 }

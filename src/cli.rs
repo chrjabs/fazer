@@ -5,12 +5,12 @@ use std::{fmt, fs, io::Write, path::PathBuf};
 use clap::{Args, Parser, Subcommand, ValueEnum};
 use rustsat::{
     instances::{fio::opb, MultiOptInstance},
-    types::{RsHashMap, RsHashSet},
+    types::RsHashSet,
 };
 use termcolor::{BufferWriter, Color, ColorSpec, WriteColor};
 
 use crate::{
-    config::{Config, FuzzConfig, InstConfig, SolverConfig},
+    config::{Config, EvalConfig, FuzzConfig, InstConfig},
     Problem,
 };
 
@@ -146,7 +146,7 @@ pub struct Cli {
 pub enum Exec {
     Generate(InstConfig),
     Fuzz(FuzzConfig),
-    Evaluate(RsHashMap<String, SolverConfig>, MultiOptInstance),
+    Evaluate(EvalConfig, MultiOptInstance),
 }
 
 #[macro_export]
@@ -296,8 +296,7 @@ impl Cli {
             }
             Command::Minimize { .. } => todo!(),
             Command::Evaluate { .. } => {
-                let config: RsHashMap<String, SolverConfig> =
-                    config.try_into().unwrap_or_else(panic_with_err!(cli));
+                let config: EvalConfig = config.try_into().unwrap_or_else(panic_with_err!(cli));
                 let inst = inst.unwrap();
                 Exec::Evaluate(config, inst)
             }
