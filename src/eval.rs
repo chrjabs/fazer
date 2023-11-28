@@ -2,7 +2,7 @@
 
 use futures::{
     channel::{mpsc, oneshot},
-    executor::{self, ThreadPool},
+    executor::ThreadPool,
     StreamExt,
 };
 use rustsat::{encodings::pb::DynamicPolyWatchdog, instances::MultiOptInstance, types::RsHashMap};
@@ -20,18 +20,18 @@ pub fn evaluate<S: Solver + From<MultiOptInstance>>(
         let mut solver = S::from(inst);
         solver.run()
     })
-    .map_err(Problem::Panic)
+    .map_err(|_| Problem::Panic)
 }
 
-pub fn compare(
+pub async fn compare(
     inst: MultiOptInstance,
     solvers: &RsHashMap<String, SolverConfig>,
     pool: Option<ThreadPool>,
 ) -> Vec<(String, Problem)> {
-    let (mut tx_prob, rx_prob) = mpsc::channel::<(String, Problem)>(solvers.len());
+    let (tx_prob, rx_prob) = mpsc::channel::<(String, Problem)>(solvers.len());
     let (mut tx_pf, rx_pf) = mpsc::channel::<(String, ParetoFront)>(solvers.len());
 
-    let fut_problems = async {
+    async {
         for (sid, sconf) in solvers {
             let sid = sid.clone();
             let sconf = sconf.clone();
@@ -84,12 +84,12 @@ pub fn compare(
             })
             .collect();
         let pfs: Vec<_> = future_pfs.await;
-        compare_pfs(pfs, nobjs, pool, tx_prob);
+        compare_pfs(pfs, nobjs, pool, tx_prob).await;
 
         let fut_problems = rx_prob.collect();
         fut_problems.await
-    };
-    executor::block_on(fut_problems)
+    }
+    .await
 }
 
 async fn filter_pf(
@@ -146,6 +146,9 @@ fn check_relation(c1: &[isize], c2: &[isize]) -> Relation {
 }
 
 fn check_pf(pf: &ParetoFront, inst: &MultiOptInstance) -> Result<(), Problem> {
+    if pf.is_empty() {
+        return Ok(());
+    }
     // Check solutions
     for (ndom_idx, ndom) in pf.iter().enumerate() {
         if ndom.costs().len() != inst.n_objectives() {
@@ -202,7 +205,7 @@ async fn compare_pfs(
             .expect("failed to send problem");
         false
     });
-    if pfs.len() <= 1 || pfs[0].1.is_empty() {
+    if pfs.len() <= 1 || pfs[0].1.is_empty() || nobjs == 0 {
         return;
     }
     // Build joint non-dominated set and compare
@@ -255,7 +258,7 @@ async fn compare_pfs(
         idx1 += nobjs;
     }
     // Check remaining Pareto fronts against joint non-dominated set
-    'solvers: for (sid, pf) in pfs {
+    for (sid, pf) in pfs {
         let mut prob_tx = tx_prob.clone();
         let non_dom_set = non_dom_set.clone();
         let future_prob = async move {

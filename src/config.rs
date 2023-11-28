@@ -15,7 +15,7 @@ pub struct Config {
 }
 
 pub struct FuzzConfig {
-    pub execution: ExecConfig,
+    pub pool: Option<ThreadPool>,
     pub instances: InstConfig,
     pub solvers: RsHashMap<String, SolverConfig>,
     pub minimization: Option<MinimizeConfig>,
@@ -29,7 +29,7 @@ impl TryFrom<Config> for FuzzConfig {
             return Err("missing execution block in config");
         }
         if value.instances.is_none() {
-            return Err("missing solvers block in config");
+            return Err("missing instances block in config");
         }
         if value.solvers.is_none() {
             return Err("missing solvers block in config");
@@ -38,7 +38,7 @@ impl TryFrom<Config> for FuzzConfig {
             return Err("missing solvers block in config");
         }
         Ok(FuzzConfig {
-            execution: value.execution.unwrap(),
+            pool: value.execution.unwrap().into(),
             instances: value.instances.unwrap(),
             solvers: value.solvers.unwrap(),
             minimization: value.minimization,
@@ -85,7 +85,7 @@ impl From<ExecConfig> for Option<ThreadPool> {
     }
 }
 
-#[derive(Deserialize)]
+#[derive(Deserialize, Clone)]
 pub struct InstConfig {
     pub seed: Option<u64>,
     pub objectives: U8Range,
@@ -174,21 +174,21 @@ impl TryFrom<Config> for InstConfig {
 }
 
 /// A range to draw random values from
-#[derive(Deserialize)]
+#[derive(Deserialize, Clone, Copy)]
 pub struct U8Range {
     min: u8,
     max: u8,
 }
 
 /// A range to draw random values from
-#[derive(Deserialize)]
+#[derive(Deserialize, Clone, Copy)]
 pub struct U64Range {
     min: u64,
     max: u64,
 }
 
 /// A range with a random max value
-#[derive(Deserialize)]
+#[derive(Deserialize, Clone, Copy)]
 pub struct U8RandomMaxRange {
     min: u8,
     max: U8Range,
@@ -196,7 +196,7 @@ pub struct U8RandomMaxRange {
 
 /// A value that is zero with a certain probability and drawn from a range
 /// otherwise
-#[derive(Deserialize)]
+#[derive(Deserialize, Clone, Copy)]
 pub struct U8ProbRange {
     zero_prob: f64,
     min: u8,
@@ -204,7 +204,7 @@ pub struct U8ProbRange {
 }
 
 /// A random value range with a divisor associated with it
-#[derive(Deserialize)]
+#[derive(Deserialize, Clone, Copy)]
 pub struct U8DivRange {
     min: u8,
     max: u8,

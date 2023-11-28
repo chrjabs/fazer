@@ -115,11 +115,12 @@ impl MoGenerator {
         }
         self.objs = self.rng.gen_range(config.objs());
         let variant = self.rng.gen_range(0..config.max_weight_variants());
-        self.weight_range = 1..self
+        let max_weight: usize = self
             .rng
             .gen_range(config.max_weight(variant))
             .try_into()
             .unwrap();
+        self.weight_range = 1..max_weight + 1;
         self.arity = vec![0; self.ands as usize];
         let width_plus_last = if self.layers.len() > 1 {
             self.layers[self.layers.len() - 1].range.end

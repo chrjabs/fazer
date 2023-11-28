@@ -2,14 +2,17 @@
 
 use std::{any::Any, fmt, io, process::ExitCode};
 
+use itertools::Itertools;
 use ::scuttle::types::ParetoFront;
 use cli::{Cli, Exec};
+use futures::executor;
 use gen::MoGenerator;
 use rustsat::instances::fio::dimacs;
 
 mod cli;
 mod config;
 mod eval;
+mod fuzz;
 mod gen;
 mod min;
 
@@ -21,9 +24,10 @@ trait Solver {
     fn run(&mut self) -> ParetoFront;
 }
 
+#[derive(Debug, Clone, Copy)]
 pub enum Problem {
-    /// The solver panicked with the given cause
-    Panic(Box<dyn Any + Send + 'static>),
+    /// The solver panicked
+    Panic,
     /// Solution is not a solution to the constraints. The parameters are the
     /// index of the non-dominated point and the index of the solution.
     UnsatSol(usize, usize),
@@ -51,7 +55,7 @@ pub enum Problem {
 impl fmt::Display for Problem {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Problem::Panic(cause) => write!(f, "panicked"),
+            Problem::Panic => write!(f, "panicked"),
             Problem::UnsatSol(ndi, si) => {
                 write!(f, "unsat solution (non-dom: {}, sol: {})", ndi, si)
             }
@@ -77,13 +81,27 @@ fn main() -> ExitCode {
     match exec {
         Exec::Generate(config) => dimacs::write_mcnf(&mut io::stdout(), MoGenerator::new(config))
             .unwrap_or_else(panic_with_err!(&cli)),
-        Exec::Fuzz(_) => todo!(),
-        Exec::Evaluate(config, inst) => {
+        Exec::Fuzz(config) => {
             cli.info(&format!(
-                "evaluating {:?}",
+                "fuzzing {:?}",
                 config.solvers.keys().collect::<Vec<_>>()
             ));
-            let problems = eval::compare(inst, &config.solvers, config.pool);
+            let (tested, results) = fuzz::fuzz(config.instances, &config.solvers, config.pool);
+            cli.info(&format!("tested {} instances", tested));
+            if results.n_problems() > 0 {
+                cli.warning(&format!("found {} problems", results.n_problems()));
+                cli.print_instance_problems(results.instance_problems());
+                cli.print_solver_problems(results.solver_problems());
+                return ExitCode::from(1);
+            }
+            cli.info("no problems found")
+        }
+        Exec::Evaluate(config, inst) => {
+            cli.info(&format!(
+                "evaluating {}",
+                config.solvers.keys().format(", ")
+            ));
+            let problems = executor::block_on(eval::compare(inst, &config.solvers, config.pool));
             if !problems.is_empty() {
                 cli.print_problems(&problems);
                 return ExitCode::from(1);

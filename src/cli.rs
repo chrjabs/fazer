@@ -3,6 +3,8 @@
 use std::{fmt, fs, io::Write, path::PathBuf};
 
 use clap::{Args, Parser, Subcommand, ValueEnum};
+use itertools::Itertools;
+use prettytable::{self, row, table, Table};
 use rustsat::{
     instances::{fio::opb, MultiOptInstance},
     types::RsHashSet,
@@ -48,6 +50,9 @@ enum Command {
     /// Evaluates a set of solvers on an instance
     #[clap(visible_alias = "eval")]
     Evaluate {
+        /// The number of worker threads
+        #[arg(short = 'j', long)]
+        workers: Option<u8>,
         #[command(flatten)]
         solvers: SolverArgs,
         #[command(flatten)]
@@ -139,6 +144,7 @@ impl fmt::Display for FileFormat {
 }
 
 pub struct Cli {
+    color: bool,
     stdout: BufferWriter,
     stderr: BufferWriter,
 }
@@ -169,6 +175,17 @@ impl Cli {
     pub fn init() -> (Self, Exec) {
         let args = CliArgs::parse();
         let cli = Self {
+            color: match args.color.color {
+                concolor_clap::ColorChoice::Always => false,
+                concolor_clap::ColorChoice::Never => false,
+                concolor_clap::ColorChoice::Auto => {
+                    if atty::is(atty::Stream::Stdout) {
+                        true
+                    } else {
+                        false
+                    }
+                }
+            },
             stdout: BufferWriter::stdout(match args.color.color {
                 concolor_clap::ColorChoice::Always => termcolor::ColorChoice::Always,
                 concolor_clap::ColorChoice::Never => termcolor::ColorChoice::Never,
@@ -192,7 +209,7 @@ impl Cli {
                 }
             }),
         };
-        let config = {
+        let mut config = {
             let (Command::Generate { config, .. }
             | Command::Fuzz { config, .. }
             | Command::Minimize { config, .. }
@@ -295,16 +312,25 @@ impl Cli {
                 Exec::Generate(config)
             }
             Command::Minimize { .. } => todo!(),
-            Command::Evaluate { .. } => {
+            Command::Evaluate { workers, .. } => {
+                if let Some(val) = workers {
+                    match &mut config.execution {
+                        Some(exec) => exec.n_workers = val,
+                        None => panic!("missing execution block in config"),
+                    }
+                }
                 let config: EvalConfig = config.try_into().unwrap_or_else(panic_with_err!(cli));
                 let inst = inst.unwrap();
                 Exec::Evaluate(config, inst)
             }
             Command::Fuzz { workers, .. } => {
-                let mut config: FuzzConfig = config.try_into().unwrap_or_else(panic_with_err!(cli));
                 if let Some(val) = workers {
-                    config.execution.n_workers = val;
+                    match &mut config.execution {
+                        Some(exec) => exec.n_workers = val,
+                        None => panic!("missing execution block in config"),
+                    }
                 }
+                let config: FuzzConfig = config.try_into().unwrap_or_else(panic_with_err!(cli));
                 Exec::Fuzz(config)
             }
         };
@@ -354,46 +380,73 @@ impl Cli {
     }
 
     pub fn print_problems(&self, problems: &[(String, Problem)]) {
-        let (slen, plen) = problems.iter().fold((6, 0), |(slen, plen), (sid, prob)| {
-            (
-                std::cmp::max(slen, sid.len()),
-                std::cmp::max(plen, format!("{}", prob).len()),
-            )
-        });
-        let mut buffer = self.stderr.buffer();
-        buffer
-            .set_color(ColorSpec::new().set_bold(true).set_dimmed(true))
-            .unwrap();
-        for _ in 0..slen + plen + 1 {
-            write!(buffer, "-").unwrap();
+        let mut table = Table::new();
+        for (slv, prob) in problems {
+            table.add_row(row![slv, prob]);
         }
-        writeln!(buffer, "").unwrap();
-        buffer.reset().unwrap();
-        write!(buffer, "Solver").unwrap();
-        for _ in 6..slen + 1 {
-            write!(buffer, " ").unwrap();
+        if self.color {
+            table.set_titles(row![bFc->"Solver", bFc->"Problem"]);
+        } else {
+            table.set_titles(row!["Solver", "Problem"]);
         }
-        writeln!(buffer, "Problem").unwrap();
-        buffer.set_color(ColorSpec::new().set_dimmed(true)).unwrap();
-        for _ in 0..slen + plen + 1 {
-            write!(buffer, "-").unwrap();
+        table.print_tty(self.color).expect("cannot write table");
+    }
+
+    pub fn print_instance_problems<'a, Iter>(&self, iter: Iter)
+    where
+        Iter: IntoIterator<Item = (&'a u64, &'a Vec<(String, Problem)>)>,
+    {
+        let mut table = Table::new();
+        for (seed, probs) in iter {
+            table.add_row(row![
+                seed,
+                probs.len(),
+                probs
+                    .iter()
+                    .map(|(slv, prob)| format!("{}: {}", slv, prob))
+                    .format("\n")
+            ]);
         }
-        writeln!(buffer, "").unwrap();
-        buffer.reset().unwrap();
-        for (sid, prob) in problems {
-            write!(buffer, "{}", sid).unwrap();
-            for _ in sid.len()..slen + 1 {
-                write!(buffer, " ").unwrap();
-            }
-            writeln!(buffer, "{}", prob).unwrap();
+        if self.color {
+            table.set_titles(
+                row![bFc->"Instance Seed", bFc->"# Problems", bFc->"Problems (solver: problem)"],
+            );
+        } else {
+            table.set_titles(row![
+                "Instance Seed",
+                "# Problems",
+                "Problems (solver: problem)"
+            ]);
         }
-        buffer
-            .set_color(ColorSpec::new().set_bold(true).set_dimmed(true))
-            .unwrap();
-        for _ in 0..slen + plen + 1 {
-            write!(buffer, "-").unwrap();
+        table.print_tty(self.color).expect("cannot write table");
+    }
+
+    pub fn print_solver_problems<'a, Iter>(&self, iter: Iter)
+    where
+        Iter: IntoIterator<Item = (&'a String, &'a Vec<(u64, Problem)>)>,
+    {
+        let mut table = Table::new();
+        for (slv, probs) in iter {
+            table.add_row(row![
+                slv,
+                probs.len(),
+                probs
+                    .iter()
+                    .map(|(seed, prob)| format!("{}: {}", slv, prob))
+                    .format("\n")
+            ]);
         }
-        writeln!(buffer, "").unwrap();
-        self.stderr.print(&buffer).expect("cannot write to stderr");
+        if self.color {
+            table.set_titles(
+                row![bFc->"Solver", bFc->"# Problems", bFc->"Problems (seed: problem)"],
+            );
+        } else {
+            table.set_titles(row![
+                "Instance Seed",
+                "# Problems",
+                "Problems (seed: problem)"
+            ]);
+        }
+        table.print_tty(self.color).expect("cannot write table");
     }
 }
